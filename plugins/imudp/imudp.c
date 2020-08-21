@@ -41,6 +41,9 @@
 #ifdef HAVE_SCHED_H
 #	include <sched.h>
 #endif
+#ifdef HAVE_SYS_PRCTL_H
+#  include <sys/prctl.h>
+#endif
 #include "rsyslog.h"
 #include "dirty.h"
 #include "net.h"
@@ -112,8 +115,8 @@ struct instanceConf_s {
 	uchar *inputname;
 	ruleset_t *pBindRuleset;	/* ruleset to bind listener to (use system default if unspecified) */
 	uchar *dfltTZ;
-	int ratelimitInterval;
-	int ratelimitBurst;
+	unsigned int ratelimitInterval;
+	unsigned int ratelimitBurst;
 	int rcvbuf;			/* 0 means: do not set, keep OS default */
 	/*  0 means:  IP_FREEBIND is disabled
 	1 means:  IP_FREEBIND enabled + warning disabled
@@ -976,9 +979,9 @@ createListner(es_str_t *port, struct cnfparamvals *pvals)
 		} else if(!strcmp(inppblk.descr[i].name, "ruleset")) {
 			inst->pszBindRuleset = (uchar*)es_str2cstr(pvals[i].val.d.estr, NULL);
 		} else if(!strcmp(inppblk.descr[i].name, "ratelimit.burst")) {
-			inst->ratelimitBurst = (int) pvals[i].val.d.n;
+			inst->ratelimitBurst = (unsigned int) pvals[i].val.d.n;
 		} else if(!strcmp(inppblk.descr[i].name, "ratelimit.interval")) {
-			inst->ratelimitInterval = (int) pvals[i].val.d.n;
+			inst->ratelimitInterval = (unsigned int) pvals[i].val.d.n;
 		} else if(!strcmp(inppblk.descr[i].name, "rcvbufsize")) {
 			const uint64_t val = pvals[i].val.d.n;
 			if(val > 1024 * 1024 * 1024) {
@@ -1192,6 +1195,7 @@ CODESTARTfreeCnf
 		free(inst->pszBindPort);
 		free(inst->pszBindAddr);
 		free(inst->pszBindDevice);
+		free(inst->pszBindRuleset);
 		free(inst->inputname);
 		free(inst->dfltTZ);
 		del = inst;
@@ -1205,9 +1209,6 @@ static void *
 wrkr(void *myself)
 {
 	struct wrkrInfo_s *pWrkr = (struct wrkrInfo_s*) myself;
-#	if defined(HAVE_PRCTL) && defined(PR_SET_NAME)
-	uchar *pszDbgHdr;
-#	endif
 	uchar thrdName[32];
 
 	snprintf((char*)thrdName, sizeof(thrdName), "imudp(w%d)", pWrkr->id);

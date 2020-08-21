@@ -4,7 +4,7 @@
  * NOTE: read comments in module-template.h for more specifics!
  *
  * Copyright 2011 Nathan Scott.
- * Copyright 2009-2018 Rainer Gerhards and Adiscon GmbH.
+ * Copyright 2009-2019 Rainer Gerhards and Adiscon GmbH.
  *
  * This file is part of rsyslog.
  *
@@ -122,6 +122,7 @@ typedef struct instanceConf_s {
 	uchar *searchIndex;
 	uchar *searchType;
 	uchar *pipelineName;
+	sbool skipPipelineIfEmpty;
 	uchar *parent;
 	uchar *tplName;
 	uchar *timeout;
@@ -144,8 +145,8 @@ typedef struct instanceConf_s {
 	uchar *myPrivKeyFile;
 	es_write_ops_t writeOperation;
 	sbool retryFailures;
-	int ratelimitInterval;
-	int ratelimitBurst;
+	unsigned int ratelimitInterval;
+	unsigned int ratelimitBurst;
 	/* for retries */
 	ratelimit_t *ratelimiter;
 	uchar *retryRulesetName;
@@ -165,6 +166,7 @@ typedef struct wrkrInstanceData {
 	instanceData *pData;
 	int serverIndex;
 	int replyLen;
+	size_t replyBufLen;
 	char *reply;
 	CURL	*curlCheckConnHandle;	/* libcurl session handle for checking the server connection */
 	CURL	*curlPostHandle;	/* libcurl session handle for posting data to the server */
@@ -190,6 +192,7 @@ static struct cnfparamdescr actpdescr[] = {
 	{ "searchindex", eCmdHdlrGetWord, 0 },
 	{ "searchtype", eCmdHdlrGetWord, 0 },
 	{ "pipelinename", eCmdHdlrGetWord, 0 },
+	{ "skippipelineifempty", eCmdHdlrBinary, 0 },
 	{ "parent", eCmdHdlrGetWord, 0 },
 	{ "dynsearchindex", eCmdHdlrBinary, 0 },
 	{ "dynsearchtype", eCmdHdlrBinary, 0 },
@@ -258,6 +261,9 @@ CODESTARTcreateWrkrInstance
 		}
 	}
 	pWrkrData->nOperations = 0;
+	pWrkrData->reply = NULL;
+	pWrkrData->replyLen = 0;
+	pWrkrData->replyBufLen = 0;
 	iRet = curlSetup(pWrkrData);
 ENDcreateWrkrInstance
 
@@ -334,6 +340,7 @@ CODESTARTfreeWrkrInstance
 		pWrkrData->restURL = NULL;
 	}
 	es_deleteStr(pWrkrData->batch.data);
+	free(pWrkrData->reply);
 ENDfreeWrkrInstance
 
 BEGINdbgPrintInstInfo
@@ -354,6 +361,7 @@ CODESTARTdbgPrintInstInfo
 	dbgprintf("\tsearch type='%s'\n", pData->searchType);
 	dbgprintf("\tpipeline name='%s'\n", pData->pipelineName);
 	dbgprintf("\tdynamic pipeline name=%d\n", pData->dynPipelineName);
+	dbgprintf("\tskipPipelineIfEmpty=%d\n", pData->skipPipelineIfEmpty);
 	dbgprintf("\tparent='%s'\n", pData->parent);
 	dbgprintf("\ttimeout='%s'\n", pData->timeout);
 	dbgprintf("\tdynamic search index=%d\n", pData->dynSrchIdx);
@@ -375,30 +383,34 @@ CODESTARTdbgPrintInstInfo
 	dbgprintf("\ttls.myprivkey='%s'\n", pData->myPrivKeyFile);
 	dbgprintf("\twriteoperation='%d'\n", pData->writeOperation);
 	dbgprintf("\tretryfailures='%d'\n", pData->retryFailures);
-	dbgprintf("\tratelimit.interval='%d'\n", pData->ratelimitInterval);
-	dbgprintf("\tratelimit.burst='%d'\n", pData->ratelimitBurst);
+	dbgprintf("\tratelimit.interval='%u'\n", pData->ratelimitInterval);
+	dbgprintf("\tratelimit.burst='%u'\n", pData->ratelimitBurst);
 	dbgprintf("\trebindinterval='%d'\n", pData->rebindInterval);
 ENDdbgPrintInstInfo
 
 
 /* elasticsearch POST result string ... useful for debugging */
 static size_t
-curlResult(void *ptr, size_t size, size_t nmemb, void *userdata)
+curlResult(void *const ptr, const size_t size, const size_t nmemb, void *const userdata)
 {
-	char *p = (char *)ptr;
-	wrkrInstanceData_t *pWrkrData = (wrkrInstanceData_t*) userdata;
+	const char *const p = (const char *)ptr;
+	wrkrInstanceData_t *const pWrkrData = (wrkrInstanceData_t*) userdata;
 	char *buf;
+	const size_t size_add = size*nmemb;
 	size_t newlen;
 	PTR_ASSERT_CHK(pWrkrData, WRKR_DATA_TYPE_ES);
-	newlen = pWrkrData->replyLen + size*nmemb;
-	if((buf = realloc(pWrkrData->reply, newlen + 1)) == NULL) {
-		LogError(errno, RS_RET_ERR, "omelasticsearch: realloc failed in curlResult");
-		return 0; /* abort due to failure */
+	newlen = pWrkrData->replyLen + size_add;
+	if(newlen + 1 > pWrkrData->replyBufLen) {
+		if((buf = realloc(pWrkrData->reply, pWrkrData->replyBufLen + size_add + 1)) == NULL) {
+			LogError(errno, RS_RET_ERR, "omelasticsearch: realloc failed in curlResult");
+			return 0; /* abort due to failure */
+		}
+		pWrkrData->replyBufLen += size_add + 1;
+		pWrkrData->reply = buf;
 	}
-	memcpy(buf+pWrkrData->replyLen, p, size*nmemb);
+	memcpy(pWrkrData->reply+pWrkrData->replyLen, p, size_add);
 	pWrkrData->replyLen = newlen;
-	pWrkrData->reply = buf;
-	return size*nmemb;
+	return size_add;
 }
 
 /* Build basic URL part, which includes hostname and port as follows:
@@ -484,7 +496,6 @@ checkConn(wrkrInstanceData_t *const pWrkrData)
 	int r;
 	DEFiRet;
 
-	pWrkrData->reply = NULL;
 	pWrkrData->replyLen = 0;
 	curl = pWrkrData->curlCheckConnHandle;
 	urlBuf = es_newStr(256);
@@ -531,8 +542,6 @@ checkConn(wrkrInstanceData_t *const pWrkrData)
 finalize_it:
 	if(urlBuf != NULL)
 		es_deleteStr(urlBuf);
-	free(pWrkrData->reply);
-	pWrkrData->reply = NULL; /* don't leave dangling pointer */
 	RETiRet;
 }
 
@@ -622,7 +631,7 @@ setPostURL(wrkrInstanceData_t *const pWrkrData, uchar **const tpls)
 		r = es_addBuf(&url, (char*)searchIndex, ustrlen(searchIndex));
 		if(r == 0) r = es_addChar(&url, '/');
 		if(r == 0) r = es_addBuf(&url, (char*)searchType, ustrlen(searchType));
-		if(pipelineName != NULL) {
+		if(pipelineName != NULL && (!pData->skipPipelineIfEmpty || pipelineName[0] != '\0')) {
 			if(r == 0) r = es_addChar(&url, separator);
 			if(r == 0) r = es_addBuf(&url, "pipeline=", sizeof("pipeline=")-1);
 			if(r == 0) r = es_addBuf(&url, (char*)pipelineName, ustrlen(pipelineName));
@@ -686,7 +695,7 @@ computeMessageSize(const wrkrInstanceData_t *const pWrkrData,
 	if(bulkId != NULL) {
 		r += sizeof(META_ID)-1 + ustrlen(bulkId);
 	}
-	if(pipelineName != NULL) {
+	if(pipelineName != NULL && (!pWrkrData->pData->skipPipelineIfEmpty || pipelineName[0] != '\0')) {
 		r += sizeof(META_PIPELINE)-1 + ustrlen(pipelineName);
 	}
 
@@ -724,7 +733,7 @@ buildBatch(wrkrInstanceData_t *pWrkrData, uchar *message, uchar **tpls)
 		if(r == 0) r = es_addBuf(&pWrkrData->batch.data, META_PARENT, sizeof(META_PARENT)-1);
 		if(r == 0) r = es_addBuf(&pWrkrData->batch.data, (char*)parent, ustrlen(parent));
 	}
-	if(pipelineName != NULL) {
+	if(pipelineName != NULL && (!pWrkrData->pData->skipPipelineIfEmpty || pipelineName[0] != '\0')) {
 		if(r == 0) r = es_addBuf(&pWrkrData->batch.data, META_PIPELINE, sizeof(META_PIPELINE)-1);
 		if(r == 0) r = es_addBuf(&pWrkrData->batch.data, (char*)pipelineName, ustrlen(pipelineName));
 	}
@@ -1558,9 +1567,7 @@ curlPost(wrkrInstanceData_t *pWrkrData, uchar *message, int msglen, uchar **tpls
 
 	PTR_ASSERT_SET_TYPE(pWrkrData, WRKR_DATA_TYPE_ES);
 
-	pWrkrData->reply = NULL;
 	pWrkrData->replyLen = 0;
-
 	if ((pWrkrData->pData->rebindInterval > -1) &&
 		(pWrkrData->nOperations > pWrkrData->pData->rebindInterval)) {
 		curl_easy_setopt(curl, CURLOPT_FRESH_CONNECT, 1);
@@ -1582,9 +1589,6 @@ curlPost(wrkrInstanceData_t *pWrkrData, uchar *message, int msglen, uchar **tpls
 		CHKiRet(checkConn(pWrkrData));
 	}
 	CHKiRet(setPostURL(pWrkrData, tpls));
-
-	pWrkrData->reply = NULL;
-	pWrkrData->replyLen = 0;
 
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDS, (char *)message);
 	curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, msglen);
@@ -1618,8 +1622,6 @@ curlPost(wrkrInstanceData_t *pWrkrData, uchar *message, int msglen, uchar **tpls
 
 finalize_it:
 	incrementServerIndex(pWrkrData);
-	free(pWrkrData->reply);
-	pWrkrData->reply = NULL; /* don't leave dangling pointer */
 	RETiRet;
 }
 
@@ -1797,6 +1799,7 @@ setInstParamDefaults(instanceData *const pData)
 	pData->searchType = NULL;
 	pData->pipelineName = NULL;
 	pData->dynPipelineName = 0;
+	pData->skipPipelineIfEmpty = 0;
 	pData->parent = NULL;
 	pData->timeout = NULL;
 	pData->dynSrchIdx = 0;
@@ -1869,6 +1872,8 @@ CODESTARTnewActInst
 			pData->pipelineName = (uchar*)es_str2cstr(pvals[i].val.d.estr, NULL);
 		} else if(!strcmp(actpblk.descr[i].name, "dynpipelinename")) {
 			pData->dynPipelineName = pvals[i].val.d.n;
+		} else if(!strcmp(actpblk.descr[i].name, "skippipelineifempty")) {
+			pData->skipPipelineIfEmpty = pvals[i].val.d.n;
 		} else if(!strcmp(actpblk.descr[i].name, "parent")) {
 			pData->parent = (uchar*)es_str2cstr(pvals[i].val.d.estr, NULL);
 		} else if(!strcmp(actpblk.descr[i].name, "dynsearchindex")) {
@@ -1944,9 +1949,9 @@ CODESTARTnewActInst
 		} else if(!strcmp(actpblk.descr[i].name, "retryfailures")) {
 			pData->retryFailures = pvals[i].val.d.n;
 		} else if(!strcmp(actpblk.descr[i].name, "ratelimit.burst")) {
-			pData->ratelimitBurst = (int) pvals[i].val.d.n;
+			pData->ratelimitBurst = (unsigned int) pvals[i].val.d.n;
 		} else if(!strcmp(actpblk.descr[i].name, "ratelimit.interval")) {
-			pData->ratelimitInterval = (int) pvals[i].val.d.n;
+			pData->ratelimitInterval = (unsigned int) pvals[i].val.d.n;
 		} else if(!strcmp(actpblk.descr[i].name, "retryruleset")) {
 			pData->retryRulesetName = (uchar*)es_str2cstr(pvals[i].val.d.estr, NULL);
 		} else if(!strcmp(actpblk.descr[i].name, "rebindinterval")) {

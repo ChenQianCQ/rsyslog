@@ -2,9 +2,9 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ(2.61)
-AC_INIT([rsyslog],[8.1910.0.master],[rsyslog@lists.adiscon.com])  # UPDATE on release
-AC_DEFINE(VERSION_YEAR, 19, [year part of real rsyslog version])  # UPDATE on release
-AC_DEFINE(VERSION_MONTH,10, [month part of real rsyslog version]) # UPDATE on release
+AC_INIT([rsyslog],[8.2008.0.master],[rsyslog@lists.adiscon.com])  # UPDATE on release
+AC_DEFINE(VERSION_YEAR, 20, [year part of real rsyslog version])  # UPDATE on release
+AC_DEFINE(VERSION_MONTH, 8, [month part of real rsyslog version]) # UPDATE on release
 
 AM_INIT_AUTOMAKE([subdir-objects])
 
@@ -140,6 +140,7 @@ AM_CONDITIONAL(OS_APPLE, test x$os_type == xapple)
 AM_CONDITIONAL(OS_LINUX, test x$os_type == xlinux)
 AM_CONDITIONAL(OS_AIX, test x$os_type == xaix)
 
+AM_PATH_PYTHON(,, [:])
 
 # Running from git source?
 in_git_src=no
@@ -547,18 +548,26 @@ AC_ARG_ENABLE(imjournal,
         [case "${enableval}" in
          yes) enable_imjournal="yes" ;;
           no) enable_imjournal="no" ;;
+         optional) enable_imjournal="optional" ;;
            *) AC_MSG_ERROR(bad value ${enableval} for --enable-imjournal) ;;
          esac],
         [enable_imjournal="no"]
 )
-if test "x$enable_imjournal" = "xyes"; then
+imjournal_use_dummy="no"
+if test "x$enable_imjournal" = "xyes" -o "x$enable_imjournal" = "xoptional"; then
 	PKG_CHECK_MODULES([LIBSYSTEMD_JOURNAL], [libsystemd >= 234] , [AC_DEFINE(NEW_JOURNAL, 1, [new systemd present])] , [
 	    PKG_CHECK_MODULES([LIBSYSTEMD_JOURNAL], [libsystemd >= 209] , , [
-	        PKG_CHECK_MODULES([LIBSYSTEMD_JOURNAL], [libsystemd-journal >= 197])
+	        PKG_CHECK_MODULES([LIBSYSTEMD_JOURNAL], [libsystemd-journal >= 197], , [
+                    AS_IF([test x$enable_imjournal = xyes],
+                        AC_MSG_FAILURE([imjournal support libraries are missing])
+	            )
+                    imjournal_use_dummy="yes"
+                 ])
 	    ])
 	])
 fi
-AM_CONDITIONAL(ENABLE_IMJOURNAL, test x$enable_imjournal = xyes)
+AM_CONDITIONAL(IMJOURNAL_USE_DUMMY, test x$imjournal_use_dummy = xyes)
+AM_CONDITIONAL(ENABLE_IMJOURNAL, test x$enable_imjournal = xyes -o x$enable_imjournal = xoptional)
 
 # use libsystemd
 AC_ARG_ENABLE(libsystemd,
@@ -813,24 +822,26 @@ AC_ARG_ENABLE(pgsql,
         [enable_pgsql=no]
 )
 if test "x$enable_pgsql" = "xyes"; then
-  AC_CHECK_PROG(
-    [PG_CONFIG],
-    [pg_config],
-    [pg_config],
-    [no],,,
-  )
-  if test "x${PG_CONFIG}" = "xno"; then
-    AC_MSG_FAILURE([pg_config not found])
-  fi
-  AC_CHECK_LIB(
-    [pq],
-    [PQconnectdb],
-    [PGSQL_CFLAGS="-I`$PG_CONFIG --includedir`"
-     PGSQL_LIBS="-L`$PG_CONFIG --libdir` -lpq"
-    ],
-    [AC_MSG_FAILURE([PgSQL library is missing])],
-    [-L`$PG_CONFIG --libdir`]
-  )
+	PKG_CHECK_MODULES([PGSQL], [libpq],, [
+	  AC_CHECK_PROG(
+	    [PG_CONFIG],
+	    [pg_config],
+	    [pg_config],
+	    [no],,,
+	  )
+	  if test "x${PG_CONFIG}" = "xno"; then
+	    AC_MSG_FAILURE([pg_config not found])
+	  fi
+	  AC_CHECK_LIB(
+	    [pq],
+	    [PQconnectdb],
+	    [PGSQL_CFLAGS="-I`$PG_CONFIG --includedir`"
+	     PGSQL_LIBS="-L`$PG_CONFIG --libdir` -lpq"
+	    ],
+	    [AC_MSG_FAILURE([PgSQL library is missing])],
+	    [-L`$PG_CONFIG --libdir`]
+	  )
+	])
 fi
 AM_CONDITIONAL(ENABLE_PGSQL, test x$enable_pgsql = xyes)
 AC_SUBST(PGSQL_CFLAGS)
@@ -842,22 +853,32 @@ AC_ARG_ENABLE(libdbi,
         [case "${enableval}" in
          yes) enable_libdbi="yes" ;;
           no) enable_libdbi="no" ;;
+          optional) enable_libdbi="optional" ;;
            *) AC_MSG_ERROR(bad value ${enableval} for --enable-libdbi) ;;
          esac],
         [enable_libdbi=no]
 )
-if test "x$enable_libdbi" = "xyes"; then
+libdbi_use_dummy="no"
+if test "x$enable_libdbi" = "xyes" -o x$enable_libdbi = xoptional; then
   AC_CHECK_HEADERS(
-    [dbi/dbi.h],,
-    [AC_MSG_FAILURE([libdbi is missing])]
+    [dbi/dbi.h],,[
+        AS_IF([test x$enable_libdbi = xyes],
+            AC_MSG_FAILURE([libdbi is missing])
+	)
+        libdbi_use_dummy="yes"
+     ]
   )
   AC_CHECK_LIB(
     [dbi],
     [dbi_initialize],
     [LIBDBI_CFLAGS=""
      LIBDBI_LIBS="-ldbi"
-    ],
-    [AC_MSG_FAILURE([libdbi library is missing])]
+    ], [
+        AS_IF([test x$enable_libdbi = xyes],
+            AC_MSG_FAILURE([libdbi is missing])
+	)
+        libdbi_use_dummy="yes"
+     ]
   )
   AC_CHECK_LIB(
     [dbi],
@@ -870,9 +891,11 @@ if test "x$enable_libdbi" = "xyes"; then
     [AC_DEFINE([HAVE_DBI_TXSUPP], [1], [Define to 1 if libdbi supports transactions])]
   )
 fi
-AM_CONDITIONAL(ENABLE_OMLIBDBI, test x$enable_libdbi = xyes)
+AM_CONDITIONAL(LIBDBI_USE_DUMMY, test x$libdbi_use_dummy = xyes)
+AM_CONDITIONAL(ENABLE_OMLIBDBI, test x$enable_libdbi = xyes -o x$enable_libdbi = xoptional)
 AC_SUBST(LIBDBI_CFLAGS)
 AC_SUBST(LIBDBI_LIBS)
+
 
 # SNMP support
 AC_ARG_ENABLE(snmp,
@@ -902,6 +925,17 @@ AM_CONDITIONAL(ENABLE_SNMP, test x$enable_snmp = xyes)
 AC_SUBST(SNMP_CFLAGS)
 AC_SUBST(SNMP_LIBS)
 
+# SNMP Test Support
+AC_ARG_ENABLE(snmp-tests,
+        [AS_HELP_STRING([--enable-snmp-tests],[Enable omsnmp tests @<:@default=no@:>@])],
+        [case "${enableval}" in
+         yes) enable_snmp_tests="yes" ;;
+          no) enable_snmp_tests="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-snmp-tests) ;;
+         esac],
+        [enable_snmp_tests=no]
+)
+AM_CONDITIONAL(ENABLE_SNMP_TESTS, test x$enable_snmp_tests = xyes)
 
 # uuid support
 AC_ARG_ENABLE(uuid,
@@ -1042,6 +1076,27 @@ if test "x$enable_gnutls" = "xyes"; then
 fi
 
 AM_CONDITIONAL(ENABLE_GNUTLS, test x$enable_gnutls = xyes)
+
+AC_ARG_ENABLE(gnutls-tests,
+        [AS_HELP_STRING([--enable-gnutls-tests],[Enable gnutls tests @<:@default=yes@:>@])],
+        [case "${enableval}" in
+         yes) enable_gnutls_tests="yes" ;;
+          no) enable_gnutls_tests="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-gnutls-tests) ;;
+         esac],
+        [if [[ "$enable_gnutls" == "yes" ]]; then
+		enable_gnutls_tests=yes
+	else
+		enable_gnutls_tests=no
+	fi]
+)
+if  [[ "$enable_gnutls_tests" == "yes" ]] && [[ "$enable_gnutls" != "yes" ]]; then
+		AC_MSG_WARN([gnutls-tests can not be enabled without gnutls support. Disabling gnutls tests...])
+		enable_gnutls_tests="no"
+fi
+
+AM_CONDITIONAL(ENABLE_GNUTLS_TESTS, test x$enable_gnutls_tests = xyes)
+
 
 # libgcrypt support
 AC_ARG_ENABLE(libgcrypt,
@@ -1363,16 +1418,25 @@ AC_ARG_ENABLE(mmdblookup,
         [case "${enableval}" in
          yes) enable_mmdblookup="yes" ;;
           no) enable_mmdblookup="no" ;;
+         optional) enable_mmdblookup="optional" ;;
            *) AC_MSG_ERROR(bad value ${enableval} for --enable-mmdblookup) ;;
          esac],
         [enable_mmdblookup=no]
 )
-if test "x$enable_mmdblookup"; then
-        #PKG_CHECK_MODULES(LIBMAXMINDDB, libmaxminddb)
-        AC_CHECK_HEADERS([maxminddb.h])
+AM_CONDITIONAL(ENABLE_MMDBLOOKUP, test x$enable_mmdblookup = xyes -o x$enable_mmdblookup = xoptional)
+mmdblookup_use_dummy="no"
+if test x$enable_mmdblookup = xoptional -o x$enable_mmdblookup = xyes; then
+        #PKG_CHECK_MODULES(LIBMAXMINDDB, libmaxminddb) -- does not work - later?
+        AC_CHECK_HEADERS([maxminddb.h], [
+	], [
+		AS_IF([test x$enable_mmdblookup = xyes],
+			AC_MSG_ERROR(libmaxminddb library for mmdblookup could not be found)
+		)
+		mmdblookup_use_dummy="yes"
+		AC_DEFINE([ENABLE_MMBDLOOKUP_DUMMY], [1], [Indicator that we need to build a dummy module])
+	])
 fi
-AM_CONDITIONAL(ENABLE_MMDBLOOKUP, test x$enable_mmdblookup = xyes)
-
+AM_CONDITIONAL(MMDBLOOKUP_USE_DUMMY, test x$mmdblookup_use_dummy = xyes)
 
 
 # mmdarwin
@@ -1475,11 +1539,17 @@ if test "x$enable_relp" = "xyes"; then
                       [AC_DEFINE([HAVE_RELPSRVSETLSTNADDR], [1], [Define if relpSrvSetLstnAddr exists.])])
         AC_CHECK_FUNC([relpEngineSetTLSLibByName],
                       [AC_DEFINE([HAVE_RELPENGINESETTLSLIBBYNAME], [1], [Define if relpEngineSetTLSLibByName exists.])])
+        AC_CHECK_FUNC([relpSrvSetTlsConfigCmd],
+                      [AC_DEFINE([HAVE_RELPENGINESETTLSCFGCMD], [1], [Define if relpSrvSetTlsConfigCmd exists.])])
+
+        AC_CHECK_FUNC([relpSrvSetTlsConfigCmd],
+                      [HAVE_RELPENGINESETTLSCFGCMD=1])
 
         CFLAGS="$save_CFLAGS"
         LIBS="$save_LIBS"
 fi
 AM_CONDITIONAL(ENABLE_RELP, test x$enable_relp = xyes)
+AM_CONDITIONAL([USE_RELPENGINESETTLSCFGCMD], [test "x$HAVE_RELPENGINESETTLSCFGCMD" = x1])
 
 # RELP default port
 AC_ARG_ENABLE(omrelp-default-port,
@@ -1688,9 +1758,14 @@ AC_ARG_ENABLE(imfile-tests,
           no) enable_imfile_tests="no" ;;
            *) AC_MSG_ERROR(bad value ${enableval} for --enable-imfile-tests) ;;
          esac],
-        [enable_file_tests=no]
+        [enable_imfile_tests=yes]
 )
+if  [[ "$enable_imfile_tests" == "yes" ]] && [[ "$enable_imfile" != "yes" ]]; then
+		AC_MSG_WARN([imfile-tests can not be enabled without imfile support. Disabling imfile tests...])
+		enable_imfile_tests="no"
+fi
 AM_CONDITIONAL(ENABLE_IMFILE_TESTS, test x$enable_imfile_tests = xyes)
+
 
 # settings for the docker log input module
 AC_ARG_ENABLE(imdocker,
@@ -1782,6 +1857,24 @@ AC_ARG_ENABLE(impstats,
 )
 AM_CONDITIONAL(ENABLE_IMPSTATS, test x$enable_impstats = xyes)
 
+# settings for the pcap input module
+AC_ARG_ENABLE(impcap,
+        [AS_HELP_STRING([--enable-impcap],[libpcap input module enabled @<:@default=no@:>@])],
+        [case "${enableval}" in
+         yes) enable_impcap="yes" ;;
+          no) enable_impcap="no" ;;
+           *) AC_MSG_ERROR(bad value ${enableval} for --enable-impcap) ;;
+         esac],
+        [enable_impcap=no]
+)
+
+if test "x$enable_impcap" = "xyes"; then
+				AC_CHECK_HEADERS([pcap.h],
+				[AC_MSG_NOTICE([pcap found])],
+				AC_MSG_ERROR([libpcap library and headers not found])
+				)
+fi
+AM_CONDITIONAL(ENABLE_IMPCAP, test x$enable_impcap = xyes)
 
 # settings for the omprog output module
 AC_ARG_ENABLE(omprog,
@@ -2047,6 +2140,7 @@ AC_ARG_ENABLE(omkafka,
         [case "${enableval}" in
          yes) enable_omkafka="yes" ;;
           no) enable_omkafka="no" ;;
+         optional) enable_omkafka="optional" ;;
            *) AC_MSG_ERROR(bad value ${enableval} for --enable-omkafka) ;;
          esac],
         [enable_omkafka=no]
@@ -2056,6 +2150,7 @@ AC_ARG_ENABLE(imkafka,
         [case "${enableval}" in
          yes) enable_imkafka="yes" ;;
           no) enable_imkafka="no" ;;
+         optional) enable_imkafka="optional" ;;
            *) AC_MSG_ERROR(bad value ${enableval} for --enable-imkafka) ;;
          esac],
         [enable_imkafka=no]
@@ -2084,17 +2179,26 @@ AC_ARG_ENABLE(kafka_static,
 AM_CONDITIONAL(ENABLE_KAFKA_STATIC, test x$enable_kafka_static = xyes)
 
 # omkafka works with older library
-if test "x$enable_omkafka" = "xyes"; then
-	PKG_CHECK_MODULES([LIBRDKAFKA], [rdkafka],, [
+omkafka_use_dummy="no"
+if test "$enable_omkafka" = "yes" -o "$enable_omkafka" = "optional"; then
+	PKG_CHECK_MODULES([LIBRDKAFKA], [rdkafka >= 0.9.1],, [
 		PKG_CHECK_MODULES([LIBRDKAFKA], [librdkafka],, [
-			AC_CHECK_LIB([rdkafka], [rd_kafka_produce], [
+			AC_CHECK_LIB([rdkafka], [rd_kafka_last_error], [
 				AC_MSG_WARN([librdkafka is missing but library present, using -lrdkafka])
 				LIBRDKAFKA_LIBS=-lrdkafka
 			], [
-				AC_MSG_ERROR([could not find rdkafka library])
+				AS_IF([test "$enable_omkafka" = "yes"],
+					AC_MSG_ERROR([could not find rdkafka library])
+				)
+				AC_MSG_NOTICE([omkafka: no suiteable build environment, use omkafka dummy])
+				omkafka_use_dummy=yes
+				AC_DEFINE([ENABLE_OMKAFKA_DUMMY], [1], [Indicator that we need to build a dummy omkafka module])
 			])
 		])
 	])
+fi
+AM_CONDITIONAL(OMKAFKA_USE_DUMMY, test x$omkafka_use_dummy = xyes)
+if test "$enable_omkafka" = "yes" -o "$enable_omkafka" = "optional" && test "$omkafka_use_dummy" = "no"; then
 	AC_CHECK_HEADERS([librdkafka/rdkafka.h])
 
 	# Add additional dependencies if statically linking rdkafka
@@ -2110,16 +2214,25 @@ if test "x$enable_omkafka" = "xyes"; then
 	fi
 fi
 
+imkafka_use_dummy="no"
 # imkafka needs newer library
-if test "x$enable_imkafka" = "xyes"; then
+if test "x$enable_imkafka" = "xyes" -o "$enable_imkafka" = "optional"; then
 	PKG_CHECK_MODULES([LIBRDKAFKA], [rdkafka >= 0.9.1],, [
-		AC_CHECK_LIB([rdkafka], [rd_kafka_produce], [
+		AC_CHECK_LIB([rdkafka], [rd_kafka_consumer_poll], [
 			AC_MSG_WARN([librdkafka is missing but library present, using -lrdkafka])
 			LIBRDKAFKA_LIBS=-lrdkafka
 		], [
-			AC_MSG_ERROR([could not find rdkafka library])
+			AS_IF([test "$enable_imkafka" = "yes"],
+				AC_MSG_ERROR([could not find sufficiently current rdkafka library])
+			)
+			AC_MSG_NOTICE([imkafka: no suiteable build environment, use imkafka dummy])
+			imkafka_use_dummy=yes
+			AC_DEFINE([ENABLE_IMKAFKA_DUMMY], [1], [Indicator that we need to build a dummy imkafka module])
 		])
 	])
+fi
+AM_CONDITIONAL(IMKAFKA_USE_DUMMY, test x$imkafka_use_dummy = xyes)
+if test "$enable_imkafka" = "yes" -o "$enable_imkafka" = "optional" && test "$imkafka_use_dummy" = "no"; then
 	AC_CHECK_HEADERS([librdkafka/rdkafka.h])
 
 	# Add additional dependencies if statically linking rdkafka
@@ -2154,8 +2267,8 @@ else
 		enable_kafka_tests="no"
 	fi
 fi
-AM_CONDITIONAL(ENABLE_OMKAFKA, test x$enable_omkafka = xyes)
-AM_CONDITIONAL(ENABLE_IMKAFKA, test x$enable_imkafka = xyes)
+AM_CONDITIONAL(ENABLE_OMKAFKA, test x$enable_omkafka = xyes -o x$enable_omkafka = xoptional)
+AM_CONDITIONAL(ENABLE_IMKAFKA, test x$enable_imkafka = xyes -o x$enable_imkafka = xoptional)
 
 #MONGODB SUPPORT
 
@@ -2188,7 +2301,7 @@ AC_ARG_ENABLE(imczmq,
         [enable_imczmq=no]
 )
 if test "x$enable_imczmq" = "xyes"; then
-	PKG_CHECK_MODULES(CZMQ, libczmq >= 3.0.0)
+	PKG_CHECK_MODULES(CZMQ, libczmq >= 4.0.0)
 fi
 AM_CONDITIONAL(ENABLE_IMCZMQ, test x$enable_imczmq = xyes)
 
@@ -2206,7 +2319,7 @@ AC_ARG_ENABLE(omczmq,
         [enable_omczmq=no]
 )
 if test "x$enable_omczmq" = "xyes"; then
-   PKG_CHECK_MODULES(CZMQ, libczmq >= 3.0.2)
+   PKG_CHECK_MODULES(CZMQ, libczmq >= 4.0.0)
 fi
 AM_CONDITIONAL(ENABLE_OMCZMQ, test x$enable_omczmq = xyes)
 
@@ -2522,11 +2635,13 @@ AC_CONFIG_FILES([Makefile \
 		contrib/imbatchreport/Makefile \
 		contrib/omfile-hardened/Makefile \
 		contrib/mmkubernetes/Makefile \
+		contrib/impcap/Makefile \
 		contrib/imtuxedoulog/Makefile \
 		contrib/improg/Makefile \
 		contrib/mmtaghostname/Makefile \
 		contrib/imdocker/Makefile \
 		contrib/pmdb2diag/Makefile \
+		tests/set-envvars \
 		tests/Makefile])
 AC_OUTPUT
 
@@ -2563,8 +2678,15 @@ echo "    Solaris input module enabled:             $enable_imsolaris"
 echo "    periodic statistics module enabled:       $enable_impstats"
 echo "    imczmq input module enabled:              $enable_imczmq"
 echo "    imjournal input module enabled:           $enable_imjournal"
+if test "$enable_imjournal" = "optional"; then
+echo "        imjournal use dummy:                  $imjournal_use_dummy"
+fi
 echo "    imbatchreport input module enabled:       $enable_imbatchreport"
 echo "    imkafka module will be compiled:          $enable_imkafka"
+if test "$enable_imkafka" = "optional"; then
+echo "        imkafka use dummy:                    $imkafka_use_dummy"
+fi
+echo "    impcap input module enabled:              $enable_impcap"
 echo "    imtuxedoulog module will be compiled:     $enable_imtuxedoulog"
 echo "    improg input module enabled:              $enable_improg"
 echo
@@ -2619,6 +2741,9 @@ echo
 echo "---{ database support }---"
 echo "    MySql support enabled:                    $enable_mysql"
 echo "    libdbi support enabled:                   $enable_libdbi"
+if test "$enable_libdbi" = "optional"; then
+echo "        libdbi use dummy:                     $libdbi_use_dummy"
+fi
 echo "    PostgreSQL support enabled:               $enable_pgsql"
 echo "    mongodb support enabled:                  $enable_ommongodb"
 echo "    hiredis support enabled:                  $enable_omhiredis"
@@ -2649,7 +2774,10 @@ echo "    ClickHouse Tests:                         $enable_clickhouse_tests"
 echo "    PostgreSQL Tests enabled:                 $enable_pgsql_tests"
 echo "    Kafka Tests enabled:                      $enable_kafka_tests"
 echo "    Imdocker Tests enabled:                   $enable_imdocker_tests"
+echo "    gnutls tests enabled:                     $enable_gnutls_tests"
+echo "    imfile tests enabled:                     $enable_imfile_tests"
 echo "    systemd journal tests enabled:            $enable_journal_tests"
+echo "    SNMP Tests enabled:                       $enable_snmp_tests"
 echo "    Debug mode enabled:                       $enable_debug"
 echo "    (total) debugless mode enabled:           $enable_debugless"
 echo "    Diagnostic tools enabled:                 $enable_diagtools"

@@ -3,22 +3,6 @@ pkglib_LTLIBRARIES =
 
 pkgconfigdir = $(libdir)/pkgconfig
 
-#
-# systemd support
-#
-if HAVE_SYSTEMD
-
-nodist_systemdsystemunit_DATA = \
-	rsyslog.service
-
-CLEANFILES = \
-	rsyslog.service
-
-%.service: %.service.in
-	$(AM_V_GEN)sed -e 's,@sbindir\@,$(sbindir),g' $< > $@
-
-endif
-
 EXTRA_DIST = \
 	README.md \
 	platform/README \
@@ -32,8 +16,7 @@ EXTRA_DIST = \
 	COPYING.ASL20 \
 	contrib/gnutls/ca.pem \
 	contrib/gnutls/cert.pem \
-	contrib/gnutls/key.pem \
-	rsyslog.service.in
+	contrib/gnutls/key.pem
 
 SUBDIRS = compat runtime grammar . plugins/immark plugins/imuxsock plugins/imtcp plugins/imudp plugins/omtesting
 # external plugin driver is always enabled (core component)
@@ -179,6 +162,10 @@ if ENABLE_OMHTTP
 SUBDIRS += contrib/omhttp
 endif
 
+if ENABLE_SNMP
+SUBDIRS += plugins/omsnmp
+endif
+
 if ENABLE_MMSNMPTRAPD
 SUBDIRS += plugins/mmsnmptrapd
 endif
@@ -308,6 +295,11 @@ if ENABLE_MMKUBERNETES
 SUBDIRS += contrib/mmkubernetes
 endif
 
+# impcap
+if ENABLE_IMPCAP
+SUBDIRS += contrib/impcap
+endif
+
 # imtuxedoulog
 if ENABLE_IMTUXEDOULOG
 SUBDIRS += contrib/imtuxedoulog
@@ -380,6 +372,9 @@ DISTCHECK_CONFIGURE_FLAGS+= \
 	--enable-pmsnare \
 	--enable-usertools
 
+else
+DISTCHECK_CONFIGURE_FLAGS+= \
+	--disable-default-tests
 endif  # if ENABLE_DEFAULT_TESTS
 
 if ENABLE_IMPROG
@@ -446,6 +441,10 @@ if ENABLE_SNMP
 DISTCHECK_CONFIGURE_FLAGS+= --enable-snmp
 endif
 
+if ENABLE_SNMP_TESTS
+DISTCHECK_CONFIGURE_FLAGS+= --enable-snmp-tests
+endif
+
 if ENABLE_FMHTTP
 DISTCHECK_CONFIGURE_FLAGS+= --enable-fmhttp
 endif
@@ -460,6 +459,12 @@ endif
 
 if ENABLE_GNUTLS
 DISTCHECK_CONFIGURE_FLAGS+= --enable-gnutls
+endif
+
+if ENABLE_GNUTLS_TESTS
+DISTCHECK_CONFIGURE_FLAGS+= --enable-gnutls-tests
+else
+DISTCHECK_CONFIGURE_FLAGS+= --disable-gnutls-tests
 endif
 
 if ENABLE_OPENSSL
@@ -540,6 +545,16 @@ endif
 
 if ENABLE_IMFILE
 DISTCHECK_CONFIGURE_FLAGS+= --enable-imfile
+endif
+
+if ENABLE_IMFILE_TESTS
+DISTCHECK_CONFIGURE_FLAGS+= --enable-imfile-tests
+else
+DISTCHECK_CONFIGURE_FLAGS+= --disable-imfile-tests
+endif
+
+if ENABLE_IMPCAP
+DISTCHECK_CONFIGURE_FLAGS+= --enable-impcap
 endif
 
 if ENABLE_IMDOCKER
